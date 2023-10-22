@@ -1,0 +1,29 @@
+[language-server]
+html-mine = { command = "_build/default/bin/main.exe", args = ["exec","lsportal","--profile" ,"release"], config = {  hostInfo="helix" } }
+html = { command = "vscode-html-language-server", args = ["--stdio"], config = { provideFormatter = true } }
+
+
+[[language]]
+name = "typescript"
+scope = "source.ts"
+injection-regex = "(ts|typescript)"
+file-types = ["ts", "mts", "cts"]
+language-id = "typescript"
+shebangs = ["deno", "ts-node"]
+roots = []
+language-servers = [ "html-mine" ]
+indent = { tab-width = 2, unit = "  " }
+
+[[language]]
+name = "htmlm"
+scope = "text.html.basic"
+injection-regex = "htmlm"
+file-types = ["htmlm", "htm", "shtml", "xhtml", "xht", "jsp", "asp", "aspx", "jshtm", "volt", "rhtml"]
+roots = []
+language-servers = [ "html-mine" ]
+auto-format = true
+indent = { tab-width = 2, unit = "  " }
+
+[[grammar]]
+name = "htmlm"
+source = { git = "https://github.com/tree-sitter/tree-sitter-html", rev = "29f53d8f4f2335e61bf6418ab8958dac3282077a" }
