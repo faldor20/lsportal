@@ -1,5 +1,5 @@
 [language-server]
-html-mine = { command = "_build/default/bin/main.exe", args = ["exec","lsportal","--profile" ,"release"], config = {  hostInfo="helix" } }
+html-mine = { command = "_build/default/bin/main.exe", args = ['--regex=\"<!--html-->([\s\S]*?)<!--html-->\"',"vscode-html-language-server","--","--stdio"], config = {  hostInfo="helix" } }
 html = { command = "vscode-html-language-server", args = ["--stdio"], config = { provideFormatter = true } }
 
 
@@ -11,7 +11,7 @@ file-types = ["ts", "mts", "cts"]
 language-id = "typescript"
 shebangs = ["deno", "ts-node"]
 roots = []
-language-servers = [ "html-mine" ]
+language-servers = ["typescript-language-server" ,"html-mine" ]
 indent = { tab-width = 2, unit = "  " }
 
 [[language]]

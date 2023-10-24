@@ -3,5 +3,5 @@
  (public_name lsportal)
  (name main)
  (preprocess(pps ppx_jane ppx_sexp_conv ppx_deriving.show ppx_expect))
-  (libraries lsportal base ppx_sexp_conv ppx_jane stdio ppx_expect ppx_deriving lsp eio_main))
+  (libraries lsportal base ppx_sexp_conv ppx_jane stdio ppx_expect ppx_deriving lsp eio_main cmdliner re))
 (env (dev (flags (:standard -warn-error -A))))
