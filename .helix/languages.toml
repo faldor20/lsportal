@@ -1,5 +1,8 @@
 [language-server]
-html-mine = { command = "_build/default/bin/main.exe", args = ['--regex=\"<!--html-->([\s\S]*?)<!--html-->\"',"vscode-html-language-server","--","--stdio"], config = {  hostInfo="helix" } }
+html-mine = { command = "_build/default/bin/main.exe", args = ['--extension=html','--regex=<!--html-->([\s\S]*?)<!--html-->',"vscode-html-language-server","--","--stdio"], config = {  hostInfo="helix" } }
+ts-in-ocaml = { command = "_build/default/bin/main.exe", args = ['--extension=ts','--regex=\{ts\|([\s\S]*?)\|ts\}',"typescript-language-server","--","--stdio"], config = {  hostInfo="helix" } }
+ocaml-wrapped= { command = "_build/default/bin/main.exe", args = ['--extension=ml','--regex=\(\*\*\)`([\s\S]*?)\(\*\*\)',"ocamllsp","--","--stdio"], config = {  hostInfo="helix" } }
+lua-wrapped= { command = "_build/default/bin/main.exe", args = ['--extension=ml','--regex=\(\*\*\)`([\s\S]*?)\(\*\*\)',"lua-language-server"], config = {  hostInfo="helix" } }
 html = { command = "vscode-html-language-server", args = ["--stdio"], config = { provideFormatter = true } }
 
 
@@ -11,8 +14,9 @@ file-types = ["ts", "mts", "cts"]
 language-id = "typescript"
 shebangs = ["deno", "ts-node"]
 roots = []
-language-servers = ["typescript-language-server" ,"html-mine" ]
+language-servers = ["lua-wrapped","typescript-language-server"  ]
 indent = { tab-width = 2, unit = "  " }
+
 
 [[language]]
 name = "htmlm"
@@ -27,3 +31,4 @@ indent = { tab-width = 2, unit = "  " }
 [[grammar]]
 name = "htmlm"
 source = { git = "https://github.com/tree-sitter/tree-sitter-html", rev = "29f53d8f4f2335e61bf6418ab8958dac3282077a" }
+

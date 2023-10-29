@@ -9,11 +9,12 @@ module Log = Log
 module LspForwarder = struct
   open Eio.Flow
 
-  type ('a, 'b, 'c) config = {
+  type ('a, 'b, 'c, 'state) config = {
     req_pre : ('c Rpc.t * Jsonrpc.Request.t -> unit) option;
     notif_pre : ('c Rpc.t * Jsonrpc.Notification.t -> unit) option;
-    transform_req : (Jsonrpc.Request.t -> Jsonrpc.Request.t) option;
-    transform_notif : (Jsonrpc.Notification.t -> Jsonrpc.Notification.t) option;
+    transform_req : ('state -> Jsonrpc.Request.t -> 'state * Jsonrpc.Request.t) option;
+    transform_notif :
+      ('state -> Jsonrpc.Notification.t -> 'state * Jsonrpc.Notification.t) option;
     name : string;
     io : 'a Flow.source * 'b Flow.sink;
   }
@@ -35,8 +36,8 @@ module LspForwarder = struct
   let forward_messages
     ?(notif_pre = fun _ -> ())
     ?(req_pre = fun _ -> ())
-    ?(transform_notif = fun x -> x)
-    ?(transform_req = fun x -> x)
+    ?(transform_notif = fun x y -> x, y)
+    ?(transform_req = fun x y -> x, y)
     ~(source : _ Rpc.t)
     (dest : _ Rpc.t ref)
     =
@@ -45,15 +46,15 @@ module LspForwarder = struct
       on_request =
         (fun (slave, request) ->
           req_pre (slave, request);
-          let new_request = transform_req request in
+          let new_state, new_request = transform_req slave.state request in
           ( (fun f -> Rpc.request !dest new_request |> f) |> Jsonrpc_runner.Reply.later,
-            slave.state ));
+            new_state ));
       on_notification =
         (fun (slave, notif) ->
           notif_pre (slave, notif);
-          let new_notification = transform_notif notif in
+          let new_state, new_notification = transform_notif slave.state notif in
           Rpc.notification !dest new_notification;
-          Jsonrpc_runner.Notify.Continue, slave.state);
+          Jsonrpc_runner.Notify.Continue, new_state);
     }
   ;;
 
@@ -62,18 +63,18 @@ module LspForwarder = struct
     forward_messages ?req_pre ?notif_pre ?transform_req ?transform_notif
   ;;
 
-  let makeLspForwarder config =
+  let makeLspForwarder config state =
     let make_fio (inp, out) = Flow_io.make inp out in
-    Rpc.create ~name:config.name (make_fio config.io) "fakeState"
+    Rpc.create ~name:config.name (make_fio config.io) state
   ;;
 
   (** creates two Rpc servers that forward messages to each other*)
-  let create_pair config1 config2 =
+  let create_pair ~state_a ~state_b config_a config_b =
     (*We wish to make the pairs mutually referential but if we did an immutable update that will break the reference, so we need refs here instead*)
-    let forwarder_a = makeLspForwarder config1 |> ref in
-    let forwarder_b = makeLspForwarder config2 |> ref in
-    forwarder_a := forward_messages_cfg config1 ~source:!forwarder_a forwarder_b;
-    forwarder_b := forward_messages_cfg config2 ~source:!forwarder_b forwarder_a;
+    let forwarder_a = makeLspForwarder config_a state_a |> ref in
+    let forwarder_b = makeLspForwarder config_b state_b |> ref in
+    forwarder_a := forward_messages_cfg config_a ~source:!forwarder_a forwarder_b;
+    forwarder_b := forward_messages_cfg config_b ~source:!forwarder_b forwarder_a;
     !forwarder_a, !forwarder_b
   ;;
 end
@@ -97,17 +98,26 @@ open Eio
 (**Creates a pair of forwarders that forward messages to each other.
    One is a slave lsp server and the other is to communicate with the editor
    @param args the arguments to pass to the slave lsp server *)
-let create ~mngr ~sw ~env ~chunk_regex args =
+open Transformer
+
+let create ~mngr ~sw ~env ~(config : Transformer.Sub_doc.chunkRule) args =
   let stdout, stdin = create_process ~stderrDest:(Stdenv.stderr env) ~sw ~mngr args in
-  let transform_notif = Transformer.trasform_server_notifiction ~chunk_regex in
-  let ls_forwarder_c =
-    LspForwarder.create_config "ls_forwarder" ~transform_notif ~io:(stdout, stdin)
-  in
+  let transform_notif state = Transformer.trasform_server_notifiction ~state in
+  let transform_req state = Transformer.transform_client_request ~state in
+  let ls_forwarder_c = LspForwarder.create_config "ls_forwarder" ~io:(stdout, stdin) in
   let editor_forwarder_c =
-    LspForwarder.create_config "editor_forwarder" ~io:(Stdenv.stdin env, Stdenv.stdout env)
+    LspForwarder.create_config
+      "editor_forwarder"
+      ~transform_notif
+      ~transform_req
+      ~io:(Stdenv.stdin env, Stdenv.stdout env)
   in
   let ls_forwarder, editor_forwarder =
-    LspForwarder.create_pair ls_forwarder_c editor_forwarder_c
+    LspForwarder.create_pair
+      ~state_a:""
+      ~state_b:{ docs = Map.empty (module String); config }
+      ls_forwarder_c
+      editor_forwarder_c
   in
   ls_forwarder, editor_forwarder
 ;;

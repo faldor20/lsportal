@@ -3,8 +3,7 @@
  
 
 
- (preprocess(pps ppx_jane ))
-  (libraries base eio ppx_jane stdio jsonrpc yojson ppx_yojson_conv_lib lsp dyn )
+  (libraries base eio stdio jsonrpc yojson ppx_yojson_conv_lib lsp dyn )
   )
 (env (dev (flags (:standard -warn-error -A))))
 (include_subdirs unqualified)

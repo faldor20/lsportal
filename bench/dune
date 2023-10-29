@@ -1,0 +1,18 @@
+(executable
+ (name bench)
+ (libraries
+lsportal
+	lsp
+  core_unix.command_unix
+  base
+  core
+  core_bench)
+ (preprocess
+  (pps ppx_bench)))
+
+(env 
+ (dev 
+  (flags (:standard -warn-error -A)))
+(release
+  (ocamlopt_flags (:standard -O3 -compact -verbose -ccopt -s -ccopt -ffunction-sections -ccopt -fdata-sections -ccopt -W   )))
+  )

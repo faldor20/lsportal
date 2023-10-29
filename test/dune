@@ -1,2 +1,7 @@
-(test
- (name lsportal))
+(library
+ (name lsportal_test)
+ (inline_tests)
+  (preprocess(pps ppx_jane ))
+  (libraries lsportal jsonrpc_runner re base spawn fpath eio  ppx_expect lsp eio_main eio.mock )
+  )
+(env (dev (flags (:standard -warn-error -A))))

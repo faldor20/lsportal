@@ -21,16 +21,20 @@ let makeRegex regex =
   try regex |> Re.Pcre.regexp with exn -> failwith "invalid regex string"
 ;;
 
-let lsportal cmd regex dd args =
+open Transformer
+open Transformer.Sub_doc
+
+let lsportal cmd regex extension dd args =
   validaiton regex args @@ fun regex args ->
   Log.setup true Stdlib.Format.err_formatter;
   Eio_main.run @@ fun env ->
   Switch.run @@ fun sw ->
   let mngr = Eio.Stdenv.process_mgr env in
-  Log.log_s ~section:"startup" @@Printf.sprintf"langserver command:'%s'\n"
-  (args|> String.concat ~sep:" ");
-  let chunk_regex = makeRegex regex in
-  let fw_editor, fw_ls = create ~sw ~mngr ~env ~chunk_regex args in
+  Log.log_s ~section:"startup"
+  @@ Printf.sprintf "langserver command:'%s'\n" (args |> String.concat ~sep:" ");
+  Log.log_s ~section:"startup" @@ Printf.sprintf "regex:'%s'" regex;
+  let config = { regex = regex |> makeRegex; exclusion_regex = None; extension } in
+  let fw_editor, fw_ls = create ~sw ~mngr ~env ~config args in
   Fiber.both (fun () -> Rpc.run fw_editor) (fun () -> Rpc.run fw_ls)
 ;;
 
@@ -47,6 +51,11 @@ let cmd =
 let regex =
   let doc = "regex pattern to match the sections of code" in
   Arg.(value & opt (some string) None & info [ "regex" ] ~doc)
+;;
+
+let extension =
+  let doc = "the file extension your language server would expect" in
+  Arg.(required & opt (some string) None & info [ "extension" ] ~doc)
 ;;
 
 (*
@@ -66,7 +75,7 @@ let cmd =
   let doc =
     "Wraps another language server allowing it to be used on a subset of a buffer"
   in
-  let term = Term.(const lsportal $ cmd $ regex $ double_dash $ lspArgs) in
+  let term = Term.(const lsportal $ cmd $ regex $ extension $ double_dash $ lspArgs) in
   let info = Cmd.info ~doc "lsportal" in
   Cmd.v info term
 ;;
