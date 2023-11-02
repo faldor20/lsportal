@@ -5,7 +5,6 @@ open Jsonrpc_runner
 open Lsp.Types
 open Test_utils
 open Lsportal.Lib
-
 open Lsportal
 
 let a = {ts|
@@ -13,12 +12,11 @@ let a = {ts|
   a
 |ts}
 
-
 exception Done of string
 
 (** This sets up two connected RPC servers and then returns flows to write to their in and out streams.
     The forwarder *)
-let make_forwarder_pair ~state_a ~state_b a_name b_name  sw mgr =
+let make_forwarder_pair ~state_a ~state_b a_name b_name sw mgr =
   (*setup the intput and output flows*)
   let b_input_o, b_input_i = Eio.Process.pipe ~sw mgr in
   let b_out_o, b_out_i = Eio.Process.pipe ~sw mgr in
@@ -48,7 +46,9 @@ let make_forwarder_pair ~state_a ~state_b a_name b_name  sw mgr =
       ~io:(b_input_o, b_out_i)
   in
   (* create the linked forwarders*)
-  let a_forwarder, b_forwarder = LspForwarder.create_pair ~state_a ~state_b a_forwarder_c b_forwarder_c in
+  let a_forwarder, b_forwarder =
+    LspForwarder.create_pair ~state_a ~state_b a_forwarder_c b_forwarder_c
+  in
   a_forwarder, b_forwarder, (b_out_o, b_input_i), (a_out_o, a_in_i)
 ;;
 
@@ -82,8 +82,9 @@ let make_echo_server name ~sw ~clock (inp, out) =
 
 (**Makes 4 connected servers an editor and lang_server that echo out messages, and one forwarder for each, which forward messages to each other and are linked to their respective echo server via a pipe *)
 let make_connected_servers ~sw ~clock mgr =
+  let fakeState = ref "" in
   let fw_editor, fw_ls, editor_io, ls_io =
-    make_forwarder_pair  ~state_a:"" ~state_b:"" "fw_editor" "fw_lsp" sw mgr
+    make_forwarder_pair ~state_a:fakeState ~state_b:fakeState "fw_editor" "fw_lsp" sw mgr
   in
   let editor = make_echo_server ~sw ~clock "editor" editor_io in
   let lang_server = make_echo_server ~sw ~clock "langServer" ls_io in
@@ -217,8 +218,8 @@ let chunk_regex = {|<!--html-->([\s\S]*?)<!--html-->|} |> Re.Pcre.re |> Re.compi
 
 let default_state =
   {
-    docs = Map.empty (module String);
-    config = { regex = chunk_regex; exclusion_regex = None; extension = "ts" };
+    docs = [];
+    config = { regex = chunk_regex; exclusion_regex = None; extension = "ts"; exclusion_exclusion=None };
   }
 ;;
 
@@ -267,9 +268,7 @@ a+10
       failwith "wrong notification"
   in
   let state, transformed =
-    Transformer.trasform_server_notifiction
-      ~state:default_state
-      did_open_notification
+    Transformer.transform_client_notification ~state:default_state did_open_notification
   in
   Stdio.printf "start length:%i end_length:%i" (String.length did_open_notification_text)
   @@ String.length (getTextDocument transformed).text;
@@ -283,7 +282,7 @@ a+10
         "textDocument": {
           "languageId": "typescript",
           "text": "\n               \n   \n           \nlet a=10\n  \n             \n \n                \n   \n           \na+10\n  \n             \n \n",
-          "uri": "file:///test.txt",
+          "uri": "file:///test.ts",
           "version": 1
         }
       },
@@ -294,9 +293,9 @@ a+10
   |}]
 ;;
 
+(*TODO: ensure this works with newlines at the start *)
 let did_open_notification_text =
-  {|
-let testString=
+  {|let testString=
   `
 <!--html-->
 let a=10
@@ -314,19 +313,15 @@ a+10
 ;;
 
 let%expect_test "DidChange notification " =
-  let did_open_notification =
-    did_open_notification_text |> make_did_open_notifiction
-  in
+  let did_open_notification = did_open_notification_text |> make_did_open_notifiction in
   let open Lsp.Types in
   let uri = DocumentUri.t_of_yojson (`String "file:///test.txt") in
   let state, transformed =
-    Transformer.trasform_server_notifiction
-      ~state:default_state
-      did_open_notification
+    Transformer.transform_client_notification ~state:default_state did_open_notification
   in
   let did_change_notifiction = make_did_change_notifiction uri (2, 5) "<newdiv" in
   let state, transformed =
-    Transformer.trasform_server_notifiction ~state did_change_notifiction
+    Transformer.transform_client_notification ~state did_change_notifiction
   in
   let getTextDocument notif =
     notif |> Lsp.Client_notification.of_jsonrpc |> function
@@ -336,27 +331,47 @@ let%expect_test "DidChange notification " =
       failwith "wrong notification"
   in
   let finalText =
-    (Map.find_exn state.docs (uri |> DocumentUri.to_string)).doc |> Lsp.Text_document.text
+    (state.docs |> Transformer.get_by_original_uri uri |> Option.value_exn).doc
+    |> Lsp.Text_document.text
   in
   Stdio.printf "start length:%i end_length:%i" (String.length did_open_notification_text)
   @@ String.length finalText;
-  [%expect {|start length:36 end_length:36|}];
+  [%expect {|start length:130 end_length:137|}];
   Stdio.printf "%s\n" finalText;
-  [%expect {| |}];
+  [%expect
+    {|
+    let testString=
+      `
+    <!--html-->
+    let a=10
+    12345678
+    12<newdiv345678
+    <!--html-->
+    `
+    let testString2=
+      `
+    <!--html-->
+    a+10
+
+    <!--html--> |}];
   Stdio.printf "%s\n"
   @@ (transformed |> Jsonrpc.Notification.yojson_of_t |> Json.to_pretty_string);
   [%expect
     {|
     {
       "params": {
-        "textDocument": {
-          "languageId": "typescript",
-          "text": "\n               \n   \n            \n \n",
-          "uri": "file:///test.txt",
-          "version": 1
-        }
+        "contentChanges": [
+          {
+            "range": {
+              "end": { "character": 2, "line": 5 },
+              "start": { "character": 2, "line": 5 }
+            },
+            "text": "<newdiv"
+          }
+        ],
+        "textDocument": { "uri": "file:///test.ts", "version": 2 }
       },
-      "method": "textDocument/didOpen",
+      "method": "textDocument/didChange",
       "jsonrpc": "2.0"
     }
 
@@ -364,39 +379,69 @@ let%expect_test "DidChange notification " =
 ;;
 
 let%expect_test "DidChange notification outside chunk" =
-  let did_open_notification =
-    did_open_notification_text |> make_did_open_notifiction
-  in
+  let did_open_notification = did_open_notification_text |> make_did_open_notifiction in
   let uri = DocumentUri.t_of_yojson (`String "file:///test.txt") in
   let state, transformed =
-    Transformer.trasform_server_notifiction ~state:default_state did_open_notification
+    Transformer.transform_client_notification ~state:default_state did_open_notification
   in
-  let did_change_notifiction = make_did_change_notifiction uri (2, 1) "<newdiv" in
+  let did_change_notifiction = make_did_change_notifiction uri (2, 0) "<newdiv" in
   let state, transformed =
-    Transformer.trasform_server_notifiction ~state did_change_notifiction
+    Transformer.transform_client_notification ~state did_change_notifiction
+  in
+  let did_change_notifiction2 =
+    make_did_change_notifiction ~override:true uri (2, 0) "<rep2"
+  in
+  let state, transformed =
+    Transformer.transform_client_notification ~state did_change_notifiction2
   in
   let finalText =
-    (Map.find_exn state.docs (uri |> DocumentUri.to_string)).doc |> Lsp.Text_document.text
+    (state.docs |> Transformer.get_by_original_uri uri |> Option.value_exn).doc
+    |> Lsp.Text_document.text
   in
   Stdio.printf "start length:%i end_length:%i" (String.length did_open_notification_text)
   @@ String.length finalText;
-  [%expect {|start length:36 end_length:36|}];
+  [%expect
+    {|
+    +line_count: 1
+    +s_chars: 2
+    +text_len: 5
+    +chars: 6
+    start length:130 end_length:138|}];
   Stdio.printf "%s\n" finalText;
-  [%expect {| |}];
+  [%expect
+    {|
+    le<rep2divt testString=
+      `
+    <!--html-->
+    let a=10
+    12345678
+    12345678
+    <!--html-->
+    `
+    let testString2=
+      `
+    <!--html-->
+    a+10
+
+    <!--html--> |}];
   Stdio.printf "%s\n"
   @@ (transformed |> Jsonrpc.Notification.yojson_of_t |> Json.to_pretty_string);
   [%expect
     {|
     {
       "params": {
-        "textDocument": {
-          "languageId": "typescript",
-          "text": "\n               \n   \n            \n \n",
-          "uri": "file:///test.txt",
-          "version": 1
-        }
+        "contentChanges": [
+          {
+            "range": {
+              "end": { "character": 6, "line": 0 },
+              "start": { "character": 2, "line": 0 }
+            },
+            "text": "     "
+          }
+        ],
+        "textDocument": { "uri": "file:///test.ts", "version": 2 }
       },
-      "method": "textDocument/didOpen",
+      "method": "textDocument/didChange",
       "jsonrpc": "2.0"
     }
 
@@ -407,6 +452,215 @@ open Transformer.Sub_doc
 open Transformer
 open Lsp.Types
 open Lsp
+
+let chunk_rule =
+  {
+    regex = Re.compile @@ Re.Pcre.re {|<.*?>(.*)<\/.*?>|};
+    extension = "html";
+    exclusion_regex = Some Re.(compile @@ Pcre.re {|(<script>.*</script>)|});
+  exclusion_exclusion=None
+  }
+;;
+
+let%expect_test "chunk exclusion inside" =
+  let text = "<html><body><script>console.log('hello world')</script></body></html>" in
+  let chunks = get_chunks text chunk_rule in
+  List.iter chunks ~f:(fun { range = pos, len } ->
+    Stdio.printf "%i,%i\n" pos len;
+    let text = String.sub text ~pos ~len in
+    Stdio.printf "%s\n" text);
+  [%expect {|
+    6,6
+    <body>
+    55,7
+    </body>|}]
+;;
+
+let%expect_test "chunk exclusion from end" =
+  let text = "<html><body><script>console.log('hello world')</body></html></script>" in
+  let chunks = get_chunks text chunk_rule in
+  List.iter chunks ~f:(fun { range = pos, len } ->
+    Stdio.printf "%i,%i\n" pos len;
+    let text = String.sub text ~pos ~len in
+    Stdio.printf "%s\n" text);
+  [%expect {|
+    6,6
+    <body>|}]
+;;
+
+let%expect_test "chunk exclusion from start" =
+  let text = "<script><html><body>console.log('hello world')</script></body></html>" in
+  let chunks = get_chunks text chunk_rule in
+  List.iter chunks ~f:(fun { range = pos, len } ->
+    Stdio.printf "%i,%i\n" pos len;
+    let text = String.sub text ~pos ~len in
+    Stdio.printf "%s\n" text);
+  [%expect {|
+    55,7
+    </body>|}]
+;;
+
+let%expect_test "chunk exclusion aligned with start" =
+  let text = "<html><script><body>console.log('hello world')</script></body></html>" in
+  let chunks = get_chunks text chunk_rule in
+  List.iter chunks ~f:(fun { range = pos, len } ->
+    Stdio.printf "%i,%i\n" pos len;
+    let text = String.sub text ~pos ~len in
+    Stdio.printf "%s\n" text);
+  [%expect {|
+    55,7
+    </body>|}]
+;;
+
+let%expect_test "chunk exclusion from inside" =
+  let text = "<script><html><body>console.log('hello world')</body></html></script>" in
+  let chunks = get_chunks text chunk_rule in
+  List.iter chunks ~f:(fun { range = pos, len } ->
+    Stdio.printf "%i,%i\n" pos len;
+    let text = String.sub text ~pos ~len in
+    Stdio.printf "%s\n" text);
+  [%expect {| |}]
+;;
+
+let%expect_test "chunk no exclusion_regex" =
+  let chunk_rule = { chunk_rule with exclusion_regex = None } in
+  let text = "<html><body><script>console.log('hello world')</script></body></html>" in
+  let chunks = get_chunks text chunk_rule in
+  List.iter chunks ~f:(fun { range = pos, len } ->
+    Stdio.printf "%i,%i\n" pos len;
+    let text = String.sub text ~pos ~len in
+    Stdio.printf "%s\n" text);
+  [%expect {|
+    6,56
+    <body><script>console.log('hello world')</script></body>|}]
+;;
+
+let testString =
+  {|
+open Dream
+open Dream_html
+
+open Tyxml_ppx
+open Tyxml_syntax
+
+let textBox2 param=
+  <html>
+% List.iter ["bye";"hi"] ~f:(fun greet ->
+  <div style="">
+  <p> hi this is text <%s param %>, <%s greet > </p>
+% );
+  </div>
+</html>
+
+(*<div class="max- ">*)
+  |}
+;;
+
+let html_regex = {|(<.*?>[\s\S]*</.*?>)|} |> Re.Pcre.re |> Re.compile
+let html_exclusion_regex = {|(<%[\s\S]*?%>)|} |> Re.Pcre.re |> Re.compile
+
+let%expect_test "regex does what i expect" =
+  let matches = Re.exec html_regex testString in
+  (*we always drop the first group because that represents any part of the regex that matched whereas we only want groups that are defined using () *)
+  let matches = matches |> Re.Group.all |> Array.to_list |> List.tl_exn in
+  List.iter matches ~f:(fun x -> Stdio.printf "%s\n" x);
+  [%expect {|
+    <html>
+    % List.iter ["bye";"hi"] ~f:(fun greet ->
+      <div style="">
+      <p> hi this is text <%s param %>, <%s greet > </p>
+    % );
+      </div>
+    </html>|}]
+;;
+
+(* This will test the notification transformer code *)
+let%expect_test "html regex test" =
+  let testString = testString in
+  let did_open_notification = make_did_open_notifiction testString in
+  let state =
+    {
+      default_state with
+      config =
+        {
+          default_state.config with
+          exclusion_regex = Some html_exclusion_regex;
+          regex = html_regex;
+        };
+    }
+  in
+  let state, transformed =
+    Transformer.transform_client_notification ~state did_open_notification
+  in
+  Stdio.printf "start length:%i end_length:%i" (String.length testString)
+  @@ String.length (getTextDocument transformed).text;
+  [%expect {|start length:253 end_length:253|}];
+  Stdio.printf "%s\n"
+  @@ (transformed |> Jsonrpc.Notification.yojson_of_t |> Json.to_pretty_string);
+  [%expect
+    {|
+    {
+      "params": {
+        "textDocument": {
+          "languageId": "typescript",
+          "text": "\n          \n               \n\n              \n                 \n\n                   \n  <html>\n% List.iter [\"bye\";\"hi\"] ~f:(fun greet ->\n  <div style=\"\">\n  <p> hi this is text             , <%s greet > </p>\n% );\n  </div>\n</html>\n\n                       \n  ",
+          "uri": "file:///test.ts",
+          "version": 1
+        }
+      },
+      "method": "textDocument/didOpen",
+      "jsonrpc": "2.0"
+    }
+
+  |}]
+;;
+
+let regex = {|([\s\S]*)|} |> Re.Pcre.regexp
+let exclusion_regex = {|(<[^%].*?>)|(<%\w*)|(%>)|(^%)|} |> Re.Pcre.regexp
+let exclusion_regex = {|(<(.*?)>[\s\S]*<\/.*?>)(?:[\s\S]*;;)|(<(.*?)>[\s\S]*<\/.*?>)|} |> Re.Pcre.regexp
+let exclusion_exculsion_regex = {|^\s*%(.*)|<%\w* (.*)%>|} |> Re.Pcre.regexp~flags:[ `MULTILINE ]
+
+let%expect_test "html regex test_2" =
+  let testString = testString in
+  let did_open_notification = make_did_open_notifiction testString in
+  let getTextDocument notif =
+    notif |> Lsp.Client_notification.of_jsonrpc |> function
+    | Ok (Lsp.Client_notification.TextDocumentDidOpen { textDocument }) ->
+      textDocument
+    | _ ->
+      failwith "wrong notification"
+  in
+  let state =
+    {
+      default_state with
+      config = { default_state.config with exclusion_regex = Some exclusion_regex; regex; exclusion_exclusion =Some exclusion_exculsion_regex };
+    }
+  in
+  let state, transformed =
+    Transformer.transform_client_notification ~state did_open_notification
+  in
+  Stdio.printf "start length:%i end_length:%i" (String.length testString)
+  @@ String.length (getTextDocument transformed).text;
+  [%expect {|start length:253 end_length:253|}];
+  Stdio.printf "%s\n"
+  @@ (transformed |> Jsonrpc.Notification.yojson_of_t |> Json.to_pretty_string);
+  [%expect
+    {|
+    {
+      "params": {
+        "textDocument": {
+          "languageId": "typescript",
+          "text": "\nopen Dream\nopen Dream_html\n\nopen Tyxml_ppx\nopen Tyxml_syntax\n\nlet textBox2 param=\n        \n  List.iter [\"bye\";\"hi\"] ~f:(fun greet ->\n                \n                          param                     \n  );\n        \n       \n\n(*<div class=\"max- \">*)\n  ",
+          "uri": "file:///test.ts",
+          "version": 1
+        }
+      },
+      "method": "textDocument/didOpen",
+      "jsonrpc": "2.0"
+    }
+
+  |}]
+;;
 
 (*
    let%expect_test "update_document" =

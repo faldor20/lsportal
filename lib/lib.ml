@@ -46,15 +46,17 @@ module LspForwarder = struct
       on_request =
         (fun (slave, request) ->
           req_pre (slave, request);
-          let new_state, new_request = transform_req slave.state request in
+          let new_state, new_request = transform_req !(slave.state) request in
+          slave.state := new_state;
           ( (fun f -> Rpc.request !dest new_request |> f) |> Jsonrpc_runner.Reply.later,
-            new_state ));
+            slave.state ));
       on_notification =
         (fun (slave, notif) ->
           notif_pre (slave, notif);
-          let new_state, new_notification = transform_notif slave.state notif in
+          let new_state, new_notification = transform_notif !(slave.state) notif in
+          slave.state := new_state;
           Rpc.notification !dest new_notification;
-          Jsonrpc_runner.Notify.Continue, new_state);
+          Jsonrpc_runner.Notify.Continue, slave.state);
     }
   ;;
 
@@ -102,20 +104,29 @@ open Transformer
 
 let create ~mngr ~sw ~env ~(config : Transformer.Sub_doc.chunkRule) args =
   let stdout, stdin = create_process ~stderrDest:(Stdenv.stderr env) ~sw ~mngr args in
-  let transform_notif state = Transformer.trasform_server_notifiction ~state in
-  let transform_req state = Transformer.transform_client_request ~state in
-  let ls_forwarder_c = LspForwarder.create_config "ls_forwarder" ~io:(stdout, stdin) in
+  let transform_client_notif state = Transformer.transform_client_notification ~state in
+  let transform_client_req state = Transformer.transform_client_request ~state in
+  let transform_server_notif state = Transformer.transform_server_notification ~state in
+  let transform_server_req state = Transformer.transform_server_request ~state in
+  let ls_forwarder_c =
+    LspForwarder.create_config
+      "ls_forwarder"
+      ~transform_notif:transform_server_notif
+      ~transform_req:transform_server_req
+      ~io:(stdout, stdin)
+  in
   let editor_forwarder_c =
     LspForwarder.create_config
       "editor_forwarder"
-      ~transform_notif
-      ~transform_req
+      ~transform_notif:transform_client_notif
+      ~transform_req:transform_client_req
       ~io:(Stdenv.stdin env, Stdenv.stdout env)
   in
+  let state = ref { docs = []; config } in
   let ls_forwarder, editor_forwarder =
     LspForwarder.create_pair
-      ~state_a:""
-      ~state_b:{ docs = Map.empty (module String); config }
+      ~state_a:state
+      ~state_b:state
       ls_forwarder_c
       editor_forwarder_c
   in

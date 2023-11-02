@@ -18,13 +18,13 @@ let validaiton regex args f =
 ;;
 
 let makeRegex regex =
-  try regex |> Re.Pcre.regexp with exn -> failwith "invalid regex string"
+  try regex |> Re.Pcre.re |> Re.compile with exn -> failwith "invalid regex string"
 ;;
 
 open Transformer
 open Transformer.Sub_doc
 
-let lsportal cmd regex extension dd args =
+let lsportal cmd regex exclusion_regex exclusion_exclusion extension dd args =
   validaiton regex args @@ fun regex args ->
   Log.setup true Stdlib.Format.err_formatter;
   Eio_main.run @@ fun env ->
@@ -33,7 +33,18 @@ let lsportal cmd regex extension dd args =
   Log.log_s ~section:"startup"
   @@ Printf.sprintf "langserver command:'%s'\n" (args |> String.concat ~sep:" ");
   Log.log_s ~section:"startup" @@ Printf.sprintf "regex:'%s'" regex;
-  let config = { regex = regex |> makeRegex; exclusion_regex = None; extension } in
+  Log.log_s ~section:"startup"
+  @@ Printf.sprintf
+       "exclusion_regex:'%s'"
+       (exclusion_regex |> Option.sexp_of_t String.sexp_of_t |> Sexp.to_string_hum);
+  let config =
+    {
+      regex = regex |> makeRegex;
+      exclusion_regex = exclusion_regex |> Option.map ~f:makeRegex;
+      extension;
+    exclusion_exclusion=
+exclusion_exclusion |> Option.map ~f:makeRegex;    }
+  in
   let fw_editor, fw_ls = create ~sw ~mngr ~env ~config args in
   Fiber.both (fun () -> Rpc.run fw_editor) (fun () -> Rpc.run fw_ls)
 ;;
@@ -51,6 +62,15 @@ let cmd =
 let regex =
   let doc = "regex pattern to match the sections of code" in
   Arg.(value & opt (some string) None & info [ "regex" ] ~doc)
+;;
+
+let exclusion_regex =
+  let doc = "regex pattern to exclude sections" in
+  Arg.(value & opt (some string) None & info [ "exclusion" ] ~doc)
+;;
+let exclusion_exclusion =
+  let doc = "regex pattern to exclude from the exclusion, useful for template strings with interpolation inside" in
+  Arg.(value & opt (some string) None & info [ "exclusion_exclusion" ] ~doc)
 ;;
 
 let extension =
@@ -75,7 +95,10 @@ let cmd =
   let doc =
     "Wraps another language server allowing it to be used on a subset of a buffer"
   in
-  let term = Term.(const lsportal $ cmd $ regex $ extension $ double_dash $ lspArgs) in
+  let term =
+    Term.(
+      const lsportal $ cmd $ regex $ exclusion_regex $exclusion_exclusion $ extension $ double_dash $ lspArgs)
+  in
   let info = Cmd.info ~doc "lsportal" in
   Cmd.v info term
 ;;

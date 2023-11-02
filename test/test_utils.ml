@@ -58,11 +58,19 @@ let make_change_event ?end_pos ?(override = false) (s_char, s_line) text =
   document_change_event
 ;;
 
-let make_did_change_notifiction ?(version = 2) uri position text =
-  let document_change_event = make_change_event position text in
+let make_did_change_notifiction ?override ?(version = 2) uri position text =
+  let document_change_event = make_change_event ?override position text in
   Lsp.Client_notification.TextDocumentDidChange
     (Lsp.Types.DidChangeTextDocumentParams.create
        ~contentChanges:[ document_change_event ]
        ~textDocument:{ version; uri })
   |> Lsp.Client_notification.to_jsonrpc
+;;
+
+let getTextDocument notif =
+  notif |> Lsp.Client_notification.of_jsonrpc |> function
+  | Ok (Lsp.Client_notification.TextDocumentDidOpen { textDocument }) ->
+    textDocument
+  | _ ->
+    failwith "wrong notification"
 ;;

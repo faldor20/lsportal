@@ -50,6 +50,8 @@ interface TextDocumentItem {
 *)
 
 module Sub_doc = struct
+  let log = Jsonrpc_runner.Log.log_s ~section:"sub_doc"
+
   (** text Chunk source*)
   type chunkSource = { range : int * int }
 
@@ -57,21 +59,130 @@ module Sub_doc = struct
   type t = {
     doc : Text_document.t;
     chunks : chunkSource list; (** Where the source text *)
+    original_uri : Uri.t;
+    transformed_uri : Uri.t;
   }
 
   type chunkRule = {
     regex : Re.re;
     extension : string;
     exclusion_regex : Re.re option;
+    exclusion_exclusion : Re.re option;
   }
 
-  let get_chunks text chunk_rule =
-    let matches = Re.all chunk_rule.regex text in
+  (*TODO: write tests for this *)
+
+  (**rewrites the chunks to exclude the exclusion chunks. can split chunks, remove chunks, or shorten chunks*)
+  let get_excluded_chunks chunks ~exclusion =
+    (*adjust the pos an len to exclude an portions covered by the exclusion_regex. potentially split up chunks that have some portion within the exclusion*)
+    let rec exclude_chunks (chunks : chunkSource list) exclusion_chunk =
+      let chunk_to_string chunk =
+        Printf.sprintf "%i,%i" (fst chunk.range) (snd chunk.range)
+      in
+      match chunks with
+      | [] ->
+        []
+      | ({ range = pos, len } as chunk) :: chunks ->
+        let e_pos, e_len = exclusion_chunk.range in
+        let end_ = pos + len in
+        let e_end = e_pos + e_len in
+        let chunk_inside_exclusion = pos >= e_pos && end_ <= e_end in
+        let exclusion_start_inside = e_pos >= pos && e_pos <= end_ in
+        let exclusion_end_inside = e_end >= pos && e_end <= end_ in
+        (* traceln "exclusion chunk %s" @@ chunk_to_string exclusion_chunk;*)
+        if chunk_inside_exclusion
+        then
+          (* traceln "chunk (%i,%i) is inside exclusion, removing" pos end_ ;*)
+          (*the chunk is inside the exclusion, so we need to remove it*)
+          exclude_chunks chunks exclusion_chunk
+        else if exclusion_start_inside && exclusion_end_inside
+        then (
+          (* traceln "chunk (%i,%i) is split by exclusion" pos end_ ;*)
+
+          (*the exclusion is inside the chunk, so we need to split the chunk*)
+          let new_chunk = { range = pos, e_pos - pos } in
+          let new_chunk2 = { range = e_end, end_ - e_end } in
+          new_chunk :: new_chunk2 :: exclude_chunks chunks exclusion_chunk)
+        else if exclusion_start_inside
+        then (
+          (*traceln "chunk (%i,%i) ends inside exclusion" pos end_ ;*)
+
+          (*the exclusion starts inside the chunk but ends outside, so we need to shorten the chunk*)
+          let new_chunk = { range = pos, e_pos - pos } in
+          new_chunk :: exclude_chunks chunks exclusion_chunk)
+        else if exclusion_end_inside
+        then (
+          (* traceln "chunk (%i,%i) starts inside exclusion" pos end_ ;*)
+          (*the exclusion ends inside the chunk but starts outside, so we need to shorten the chunk*)
+          let new_chunk = { range = e_end, end_ - e_end } in
+          new_chunk :: exclude_chunks chunks exclusion_chunk)
+        else
+          (*the exclusion is outside the chunk so we don't need to modify it*)
+          chunk :: exclude_chunks chunks exclusion_chunk
+    in
+    if List.is_empty exclusion
+    then chunks
+    else
+      List.fold ~init:chunks exclusion ~f:(fun chunks exclusion_chunk ->
+        exclude_chunks chunks exclusion_chunk)
+      |> List.filter ~f:(fun x -> x.range |> snd |> ( <> ) 0)
+  ;;
+
+  let get_chunks text regex =
+    let matches = Re.all regex text in
     matches
-    |> List.map ~f:(fun m ->
-      let pos, end_pos = Re.Group.offset m 1 in
-      let len = end_pos - pos in
-      { range = pos, len })
+    |> List.concat_map ~f:(fun m ->
+    (*
+      Re.Group.all m
+      |> Array.to_list
+      |> List.tl_exn
+      |> List.iter ~f:(fun x -> traceln "chunk (%s)\n" x);
+*)
+      (*Normally we want the second match group because the first one is the entire regex whereas we only want the defined group, however if the user wraps the entire regex in one big match group there won't be a second. So we assume they want the entire regex*)
+      let groups =
+        (*we remove any offsets with -1,-1 becuase they are not matches*)
+        Re.Group.all_offset m
+        |> Array.filter ~f:(fun (x, y) -> not (x = -1 && y = -1))
+        |> Array.to_list
+      in
+      if groups |> List.length = 0
+      then []
+      else
+        groups
+        |> List.tl
+        |> Option.value_or_thunk ~default:(fun () -> [ groups |> List.hd_exn ])
+        |> List.map ~f:(fun (pos, end_pos) ->
+          let len = end_pos - pos in
+          { range = pos, len }))
+    |> List.filter ~f:(fun x -> x.range |> snd |> ( <> ) 0)
+  ;;
+
+  let get_chunks text chunk_rule =
+    log @@ Printf.sprintf "getting chunks for text %s " text;
+    let chunks = get_chunks text chunk_rule.regex in
+    log @@ Printf.sprintf "found %i chunks before exclusion" @@ List.length chunks;
+    match chunk_rule.exclusion_regex with
+    | None ->
+      chunks
+    | Some exclusion_regex ->
+      let exclusion_chunks = get_chunks text exclusion_regex in
+      (match chunk_rule.exclusion_exclusion with
+       | None ->
+         log @@ Printf.sprintf "found %i exclusion_chunks" @@ List.length exclusion_chunks;
+         let post_exclusion = get_excluded_chunks chunks ~exclusion:exclusion_chunks in
+         log @@ Printf.sprintf "%i chunks after exclusion" @@ List.length post_exclusion;
+         post_exclusion
+       | Some exclusion_exclusion ->
+         let exclusion_exclusion = get_chunks text exclusion_exclusion in
+(*         traceln "found %i exclusion_exclusinos" @@ List.length exclusion_exclusion;*)
+         let exclusion_chunks =
+           get_excluded_chunks exclusion_chunks ~exclusion:exclusion_exclusion
+         in
+         let post_exclusion = get_excluded_chunks chunks ~exclusion:exclusion_chunks in
+         log
+         @@ Printf.sprintf "%i chunks after double exclusion"
+         @@ List.length post_exclusion;
+         post_exclusion)
   ;;
 
   (**Takes a byte sequence of a string and converts any char within the range to a space*)
@@ -111,14 +222,53 @@ end
 open Sub_doc
 open Lsp.Types
 
-type docMap = Sub_doc.t Map.M(String).t
-
 type state = {
-  docs : docMap;
+  docs : Sub_doc.t list;
   config : chunkRule;
 }
 
-let update_document ~state uri version content_changes =
+let get_by_trans_uri uri docs =
+  List.find docs ~f:(fun doc -> Uri.equal doc.transformed_uri uri)
+;;
+
+let get_by_original_uri uri docs =
+  List.find docs ~f:(fun doc -> Uri.equal doc.original_uri uri)
+;;
+
+let set_doc_by_original_uri uri new_doc docs =
+  let inserted = ref false in
+  let docs =
+    List.map docs ~f:(fun doc ->
+      if Uri.equal doc.original_uri uri
+      then (
+        inserted := true;
+        new_doc)
+      else doc)
+  in
+  if !inserted then docs else new_doc :: docs
+;;
+
+let set_doc_by_trans_uri uri new_doc docs =
+  let inserted = ref false in
+  let docs =
+    List.map docs ~f:(fun doc ->
+      if Uri.equal doc.transformed_uri uri
+      then (
+        inserted := true;
+        new_doc)
+      else doc)
+  in
+  if !inserted then docs else new_doc :: docs
+;;
+
+let log = Jsonrpc_runner.Log.log_s ~section:"transformer"
+
+let update_document
+  ~state
+  uri
+  version
+  (content_changes : TextDocumentContentChangeEvent.t list)
+  =
   (*TODO: Here i should check if the edit is outside the range of my chunks, if so, update the chunks positions but no the contents*)
   (*
      I have a few issues here:
@@ -128,24 +278,27 @@ let update_document ~state uri version content_changes =
      1b. I could accumulte a list of "dirty points" and then re-scan those regions only
      After some benchmarking this is absurdly fast. like <10ms to find the chunks  in 12k lines of html
   *)
-  match Map.find state.docs (uri |> Types.DocumentUri.to_string) with
+  match state.docs |> get_by_original_uri uri with
   | None ->
-    Jsonrpc_runner.Log.log_s ~section:"transformer" "no document for this uri";
+    log "no document for this uri";
     None
   | Some subDoc ->
-    Jsonrpc_runner.Log.log_s ~section:"transformer" "attempting to update document";
-    traceln "doc length%i" (subDoc.doc |> Text_document.text |> String.length);
+    log "attempting to update document";
+    Logs.debug (fun m -> m "document text %s" (Text_document.text subDoc.doc));
     (*First we apply the text edits*)
-    let newDoc =
-      Text_document.apply_content_changes subDoc.doc ~version content_changes
+    let edits =
+      List.map content_changes ~f:(fun c ->
+        let range = c.range |> Option.value_exn in
+        TextEdit.create ~range ~newText:c.text)
     in
-    traceln "unchanged  doc length%i" (subDoc.doc |> Text_document.text |> String.length);
-    traceln "doc length%i" (newDoc |> Text_document.text |> String.length);
+    let newDoc = Text_document.apply_content_changes subDoc.doc content_changes in
     (*Then we recalculate the chunks for the updated document *)
     let newChunks = get_chunks (Text_document.text newDoc) state.config in
-    traceln "orig_text '%i'" (Text_document.text newDoc |> String.length);
     let new_text =
-      generate_isolated_doc ~languageId:"html" (Text_document.text newDoc) newChunks
+      generate_isolated_doc
+        ~languageId:"html"
+        (Text_document.text newDoc |> String.map ~f:(fun x -> x))
+        newChunks
     in
     (*Now we can modify the changeEvents so that the actual language server will make the correct changes*)
     let new_changes =
@@ -153,26 +306,30 @@ let update_document ~state uri version content_changes =
         let pos =
           Text_document.absolute_position newDoc (c.range |> Option.value_exn).start
         in
-        traceln "pos:%i " pos;
-        traceln "new_text '%i'" (new_text |> String.length);
+        let pos2 =
+          Text_document.absolute_position subDoc.doc (c.range |> Option.value_exn).end_
+        in
+        if pos <> pos2
+        then
+          log
+          @@ Printf.sprintf
+               "ERROR!! pos in current doc and pos in old doc have diverged, this is \
+                very bad. pos:%i pos2 %i"
+               pos
+               pos2;
         let len = c.text |> String.length in
         let new_change_text = new_text |> String.sub ~pos ~len in
-        traceln "new_change_text '%i'" (new_change_text |> String.length);
         { c with text = new_change_text })
     in
     (*Now to ensure we are in sync with the actual server we apply these new content-changes to the unchaged doc
       TODO: This may not be necissary, but it can't hurt
     *)
-    let newDoc = Text_document.apply_content_changes subDoc.doc ~version new_changes in
-    let newSubDoc = { doc = newDoc; chunks = newChunks } in
-    traceln "doc length%i" (newSubDoc.doc |> Text_document.text |> String.length);
-    let newMap =
-      Map.set state.docs ~key:(uri |> Types.DocumentUri.to_string) ~data:newSubDoc
-    in
-    Some ({ state with docs = newMap }, content_changes)
+    let newSubDoc = { subDoc with doc = newDoc; chunks = newChunks } in
+    let newMap = state.docs |> set_doc_by_original_uri uri newSubDoc in
+    Some ({ state with docs = newMap }, new_changes)
 ;;
 
-let setUriExtension ext uri =
+let set_uri_extension ext uri =
   let path = Uri.to_path uri in
   match Fpath.of_string path with
   | Ok path ->
@@ -182,18 +339,18 @@ let setUriExtension ext uri =
 ;;
 
 let changeUriTextExtTDoc ext (doc : TextDocumentItem.t) =
-  { doc with uri = doc.uri |> setUriExtension ext }
+  { doc with uri = doc.uri |> set_uri_extension ext }
 ;;
 
 let changeUriTextExt ext (doc : VersionedTextDocumentIdentifier.t) =
-  { doc with uri = doc.uri |> setUriExtension ext }
+  { doc with uri = doc.uri |> set_uri_extension ext }
 ;;
 
 let changeUriTextID ext (doc : TextDocumentIdentifier.t) =
-  { doc with uri = doc.uri |> setUriExtension ext }
+  { doc with uri = doc.uri |> set_uri_extension ext }
 ;;
 
-let change_notification_uri ext (client_notif : Client_notification.t) =
+let change_client_notification_uri ext (client_notif : Client_notification.t) =
   match client_notif with
   | Client_notification.DidSaveTextDocument p ->
     Client_notification.DidSaveTextDocument
@@ -213,7 +370,7 @@ let change_notification_uri ext (client_notif : Client_notification.t) =
     client_notif
 ;;
 
-let change_request_uri ext (client_request : Client_request.packed) =
+let change_client_request_uri ext (client_request : Client_request.packed) =
   let open Client_request in
   match client_request with
   | E (TextDocumentHover p) ->
@@ -278,7 +435,7 @@ let change_request_uri ext (client_request : Client_request.packed) =
     client_request
 ;;
 
-let trasform_server_notifiction ~(state : state) notif =
+let transform_client_notification ~(state : state) notif =
   let lsp_notif = Lsp.Client_notification.of_jsonrpc notif in
   Jsonrpc_runner.Log.log_s ~section:"transformer" "running transformer on notifiction";
   match lsp_notif with
@@ -296,40 +453,55 @@ let trasform_server_notifiction ~(state : state) notif =
         (match chunks with
          | [] ->
            Jsonrpc_runner.Log.log_s ~section:"transformer" "no chunks found";
-           (*this actually mutates the stirng*)
+           let doc = Text_document.make ~position_encoding:`UTF8 params in
+           let transformed_uri =
+             textDocument.uri |> set_uri_extension state.config.extension
+           in
+           let subDoc =
+             {
+               doc;
+               chunks;
+               transformed_uri;
+               original_uri = doc |> Text_document.documentUri;
+             }
+           in
+           (*this actually mutates the string*)
            whitespacify
              ~pos:0
              ~len:(String.length textDocument.text)
-             (Bytes.unsafe_of_string_promise_no_mutation textDocument.text);
-           let doc = Text_document.make ~position_encoding:`UTF8 params in
-           let subDoc = { doc; chunks } in
+             (Bytes.of_string textDocument.text);
            ( {
                state with
-               docs =
-                 Map.set state.docs ~key:(textDocument.uri |> Uri.to_string) ~data:subDoc;
+               docs = state.docs |> set_doc_by_original_uri textDocument.uri subDoc;
              },
              lsp_notif )
          | _ ->
+           (*First we save our representation, we don't want to save the the modified version, we always need to keep the real doc in memory so we can correctly apply edits *)
+           let doc = Text_document.make ~position_encoding:`UTF8 params in
+           let transformed_uri =
+             textDocument.uri |> set_uri_extension state.config.extension
+           in
+           let subDoc =
+             {
+               doc;
+               chunks;
+               original_uri = doc |> Text_document.documentUri;
+               transformed_uri;
+             }
+           in
+           let new_docs = state.docs |> set_doc_by_original_uri textDocument.uri subDoc in
+           (*new we make a modified version to send to the languageserver*)
            let new_text =
              generate_isolated_doc ~languageId:"html" textDocument.text chunks
            in
            let newParams =
              { params with textDocument = { params.textDocument with text = new_text } }
            in
-           let doc = Text_document.make ~position_encoding:`UTF8 newParams in
-           let subDoc = { doc; chunks } in
-           let newMap =
-             Map.set
-               state.docs
-               ~key:(textDocument.uri |> Types.DocumentUri.to_string)
-               ~data:subDoc
-           in
-           (*TODO: update the Text_document with the new text*)
            let notif = Client_notification.TextDocumentDidOpen newParams in
            Jsonrpc_runner.Log.log_s ~section:"transformer"
            @@ "forwarding on text : "
            ^ new_text;
-           { state with docs = newMap }, notif)
+           { state with docs = new_docs }, notif)
       | Client_notification.TextDocumentDidClose notif ->
         state, lsp_notif
       | Client_notification.TextDocumentDidChange
@@ -348,19 +520,68 @@ let trasform_server_notifiction ~(state : state) notif =
         state, lsp_notif
     in
     (*We change the extension because sometimes the language server will be unhappy if the extension doesn't match what they want*)
-    let notif = notif |> change_notification_uri state.config.extension in
+    let notif = notif |> change_client_notification_uri state.config.extension in
     state, notif |> Lsp.Client_notification.to_jsonrpc
 ;;
 
-let transform_client_request ~state (req:Request.t) =
+let transform_client_request ~state (req : Request.t) =
   let id = req.id in
-    match Client_request.of_jsonrpc req with
+  match Client_request.of_jsonrpc req with
   | Error msg ->
     failwith @@ "error deserialising json rpc message to client_request: " ^ msg
   | Ok req ->
-    (match req |> change_request_uri state.config.extension with
+    (match req |> change_client_request_uri state.config.extension with
      | E req ->
-       state, req |> Lsp.Client_request.to_jsonrpc_request ~id )
+       state, req |> Lsp.Client_request.to_jsonrpc_request ~id)
+;;
+
+(**get's the original uri associated with some transformed uri*)
+let get_original_uri state ~trans_uri =
+  let originalDoc = state.docs |> get_by_trans_uri trans_uri in
+  match originalDoc with
+  | None ->
+    let uri_str = trans_uri |> DocumentUri.to_path in
+    log @@ "no document found for this transformed_uri:" ^ uri_str;
+    None
+  | Some doc ->
+    Some (doc.doc |> Text_document.documentUri)
+;;
+
+let transform_server_notification ~(state : state) notification =
+  match Server_notification.of_jsonrpc notification with
+  | Error msg ->
+    failwith @@ "error deserialising json rpc message to server_notification: " ^ msg
+  | Ok notification ->
+    let notification =
+      match notification with
+      | Server_notification.PublishDiagnostics p ->
+        (match get_original_uri state ~trans_uri:p.uri with
+         | None ->
+           notification
+         | Some originalUri ->
+           let original_extension =
+             originalUri
+             |> Uri.to_path
+             |> Fpath.of_string
+             |> Stdlib.Result.get_ok
+             |> Fpath.get_ext
+           in
+           Server_notification.PublishDiagnostics
+             { p with uri = p.uri |> set_uri_extension @@ original_extension })
+      | _ ->
+        notification
+    in
+    state, notification |> Lsp.Server_notification.to_jsonrpc
+;;
+
+let transform_server_request ~state (request : Jsonrpc.Request.t) =
+  let id = request.id in
+  match Server_request.of_jsonrpc request with
+  | Error msg ->
+    failwith @@ "error deserialising json rpc message to server_request: " ^ msg
+  | Ok request ->
+    let request = match request with _ -> request in
+    (match request with E req -> state, req |> Lsp.Server_request.to_jsonrpc_request ~id)
 ;;
 
 let maybeRewrapNotification (notif : Jsonrpc.Notification.t) rewrapper =
