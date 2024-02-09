@@ -42,8 +42,8 @@ let lsportal cmd regex exclusion_regex exclusion_exclusion extension dd args =
       regex = regex |> makeRegex;
       exclusion_regex = exclusion_regex |> Option.map ~f:makeRegex;
       extension;
-    exclusion_exclusion=
-exclusion_exclusion |> Option.map ~f:makeRegex;    }
+      exclusion_exclusion = exclusion_exclusion |> Option.map ~f:makeRegex;
+    }
   in
   let fw_editor, fw_ls = create ~sw ~mngr ~env ~config args in
   Fiber.both (fun () -> Rpc.run fw_editor) (fun () -> Rpc.run fw_ls)
@@ -68,8 +68,12 @@ let exclusion_regex =
   let doc = "regex pattern to exclude sections" in
   Arg.(value & opt (some string) None & info [ "exclusion" ] ~doc)
 ;;
+
 let exclusion_exclusion =
-  let doc = "regex pattern to exclude from the exclusion, useful for template strings with interpolation inside" in
+  let doc =
+    "regex pattern to exclude from the exclusion, useful for template strings with \
+     interpolation inside"
+  in
   Arg.(value & opt (some string) None & info [ "exclusion_exclusion" ] ~doc)
 ;;
 
@@ -97,7 +101,14 @@ let cmd =
   in
   let term =
     Term.(
-      const lsportal $ cmd $ regex $ exclusion_regex $exclusion_exclusion $ extension $ double_dash $ lspArgs)
+      const lsportal
+      $ cmd
+      $ regex
+      $ exclusion_regex
+      $ exclusion_exclusion
+      $ extension
+      $ double_dash
+      $ lspArgs)
   in
   let info = Cmd.info ~doc "lsportal" in
   Cmd.v info term

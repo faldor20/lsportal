@@ -3,9 +3,8 @@ open Eio
 open Base
 open Import
 
-
-module Make(Chan: Io_types.Packet_Channel)= struct
-  include Core.Core(Chan)
+module Make (Chan : Io_types.Packet_Channel) = struct
+  include Core.Core (Chan)
 
   module Batch = struct
     type response =
@@ -27,6 +26,7 @@ module Make(Chan: Io_types.Packet_Channel)= struct
       resp
     ;;
   end
+
   let submit (t : _ t) (batch : Batch.t) =
     check_running t;
     let pending = !batch in
@@ -41,4 +41,4 @@ module Make(Chan: Io_types.Packet_Channel)= struct
     List.iter ivars ~f:(fun (id, ivar) -> register_request_ivar t id ivar);
     Chan.send t.chan pending
   ;;
-  end
+end

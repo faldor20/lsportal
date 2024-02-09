@@ -1,13 +1,12 @@
-
-
 let ocmal = `
+
 let a=
 (**)
-myvar=10
-potato = myvar
-
+Myvar=10
+Potato = Myvar
 (**)
 `
+let a=""
 let testString2 =
   `
 <!--html-->
